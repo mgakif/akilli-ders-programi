@@ -5,6 +5,7 @@ import { CourseCard } from './components/CourseCard';
 import { LoginView } from './components/LoginView';
 import { SettingsModal } from './components/SettingsModal';
 import { CourseDayConfigModal } from './components/CourseDayConfigModal';
+import { ConfirmationModal } from './components/ConfirmationModal';
 import { Calendar, Layout, Plus, ChevronLeft, ChevronRight, LogOut, Settings, CalendarClock } from 'lucide-react';
 
 const STORAGE_KEY = 'my_smart_schedule_v1';
@@ -20,6 +21,17 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isDayConfigOpen, setIsDayConfigOpen] = useState(false);
   
+  // Confirmation Modal State
+  const [confirmModal, setConfirmModal] = useState({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+    isDanger: false
+  });
+
+  const closeConfirm = () => setConfirmModal(prev => ({ ...prev, isOpen: false }));
+
   // Load initial state
   useEffect(() => {
     // Check Auth
@@ -66,19 +78,15 @@ export default function App() {
   };
 
   const handleUploadSuccess = (incomingSchedule: Schedule) => {
-    // Check if incomingSchedule is array
     if (!Array.isArray(incomingSchedule)) {
         console.error("Uploaded data is not an array");
         return;
     }
 
-    // Merge Strategy:
     const mergedSchedule = [...schedule];
 
     incomingSchedule.forEach(incomingDay => {
-      // Defensive coding: ensure courses is an array
       const safeCourses = Array.isArray(incomingDay.courses) ? incomingDay.courses : [];
-      
       const existingDayIndex = mergedSchedule.findIndex(s => s.day === incomingDay.day && s.isDate === incomingDay.isDate);
       
       if (existingDayIndex > -1) {
@@ -87,7 +95,6 @@ export default function App() {
           courses: [...mergedSchedule[existingDayIndex].courses, ...safeCourses]
         };
       } else {
-        // Create new entry ensuring courses is set
         mergedSchedule.push({
             ...incomingDay,
             courses: safeCourses
@@ -112,15 +119,26 @@ export default function App() {
     setViewMode(ViewMode.TODAY);
   };
 
-  const handleClearAll = () => {
-    if(confirm("Tüm ders programını silmek istediğinize emin misiniz?")) {
+  // --- ACTIONS ---
+
+  const executeClearAll = () => {
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(DAYS_CONFIG_KEY);
       setSchedule([]);
       setCourseDayConfig({});
       setViewMode(ViewMode.UPLOAD);
       setIsSettingsOpen(false);
-    }
+      closeConfirm();
+  };
+
+  const handleClearAllRequest = () => {
+    setConfirmModal({
+        isOpen: true,
+        title: 'Verileri Sıfırla',
+        message: 'Tüm ders programını silmek istediğinize emin misiniz? Bu işlem geri alınamaz.',
+        isDanger: true,
+        onConfirm: executeClearAll
+    });
   };
 
   const handleSaveDayConfig = (newConfig: CourseDayConfig) => {
@@ -128,13 +146,8 @@ export default function App() {
       localStorage.setItem(DAYS_CONFIG_KEY, JSON.stringify(newConfig));
   };
 
-  // ROBUST DELETE: Uses exact array indices to prevent day matching errors
-  const handleDeleteCourseInstance = (scheduleIndex: number, courseIndex: number) => {
-    if(!confirm("Bu dersi listeden kaldırmak istediğinize emin misiniz?")) return;
-
+  const executeDeleteCourseInstance = (scheduleIndex: number, courseIndex: number) => {
     const newSchedule = [...schedule];
-    
-    // Safety check
     if (scheduleIndex < 0 || scheduleIndex >= newSchedule.length) return;
 
     const targetDay = { ...newSchedule[scheduleIndex] };
@@ -144,7 +157,6 @@ export default function App() {
         newCourses.splice(courseIndex, 1);
         targetDay.courses = newCourses;
 
-        // Update or remove the day if empty
         if (newCourses.length === 0) {
             newSchedule.splice(scheduleIndex, 1);
         } else {
@@ -154,50 +166,61 @@ export default function App() {
         setSchedule(newSchedule);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(newSchedule));
     }
+    closeConfirm();
   };
 
-  // ROBUST GLOBAL DELETE: Trims strings to ensure matches
-  const handleDeleteCourseGlobally = (courseName: string) => {
-    // 1. Filter out the course from the schedule (Normalize names)
-    const normalizedTarget = courseName.trim();
+  const handleDeleteCourseInstanceRequest = (scheduleIndex: number, courseIndex: number) => {
+    setConfirmModal({
+        isOpen: true,
+        title: 'Dersi Sil',
+        message: 'Bu dersi listeden kaldırmak istediğinize emin misiniz?',
+        isDanger: true,
+        onConfirm: () => executeDeleteCourseInstance(scheduleIndex, courseIndex)
+    });
+  };
 
+  const executeDeleteCourseGlobally = (courseName: string) => {
+    const normalizedTarget = courseName.trim();
     const newSchedule = schedule.map(day => ({
         ...day,
         courses: day.courses.filter(c => c.name.trim() !== normalizedTarget)
-    })).filter(day => day.courses.length > 0); // Remove days that become empty
+    })).filter(day => day.courses.length > 0); 
 
-    // 2. Remove from config
     const newConfig = { ...courseDayConfig };
-    // Find keys that match strictly or trimmed
     Object.keys(newConfig).forEach(key => {
         if (key.trim() === normalizedTarget) {
             delete newConfig[key];
         }
     });
 
-    // 3. Save states
     setSchedule(newSchedule);
     setCourseDayConfig(newConfig);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(newSchedule));
     localStorage.setItem(DAYS_CONFIG_KEY, JSON.stringify(newConfig));
+    closeConfirm();
+  };
+
+  const handleGlobalDeleteRequest = (courseName: string) => {
+    setConfirmModal({
+        isOpen: true,
+        title: 'Dersi Tamamen Sil',
+        message: `"${courseName}" dersini ve tüm içeriklerini sistemden TAMAMEN silmek istediğinize emin misiniz?`,
+        isDanger: true,
+        onConfirm: () => executeDeleteCourseGlobally(courseName)
+    });
   };
 
   const getDayName = (date: Date): string => {
     return date.toLocaleDateString('tr-TR', { weekday: 'long' });
   };
 
-  // Aggregates recurring weekly courses AND specific dated courses for the current view
   const currentDayData = useMemo(() => {
     const dayName = getDayName(currentDate); 
     const dateStr = currentDate.toISOString().split('T')[0];
     
-    // Store scheduleIndex instead of just day name for reliable deletion
     let combinedCourses: { course: Course, scheduleIndex: number, originalIndex: number }[] = [];
 
-    // 1. Find Recurring Courses
-    // Use findIndex to get the exact position in the master schedule array
     const recurringDayIndex = schedule.findIndex(s => !s.isDate && s.day.toLowerCase() === dayName.toLowerCase());
-    
     if (recurringDayIndex !== -1) {
       schedule[recurringDayIndex].courses.forEach((c, idx) => {
         combinedCourses.push({ 
@@ -208,9 +231,7 @@ export default function App() {
       });
     }
 
-    // 2. Find Specific Date Courses
     const specificDayIndex = schedule.findIndex(s => s.isDate && s.day === dateStr);
-    
     if (specificDayIndex !== -1) {
       schedule[specificDayIndex].courses.forEach((c, idx) => {
         combinedCourses.push({ 
@@ -221,19 +242,13 @@ export default function App() {
       });
     }
 
-    // 3. Filter based on Day Configuration (User Settings)
     return combinedCourses.filter(item => {
-        const configDays = courseDayConfig[item.course.name.trim()]; // Handle loose config
-        
-        // If no config exists for this course, show it by default
+        const configDays = courseDayConfig[item.course.name.trim()]; 
         if (!configDays) {
-            // Check if there is a config for untrimmed version just in case
             const rawConfigDays = courseDayConfig[item.course.name];
             if (rawConfigDays) return rawConfigDays.includes(dayName);
             return true;
         }
-
-        // If config exists, check if today matches one of the selected days
         return configDays.includes(dayName);
     });
 
@@ -344,7 +359,7 @@ export default function App() {
               <CourseCard 
                 key={`${item.scheduleIndex}-${idx}`} 
                 course={item.course} 
-                onDelete={() => handleDeleteCourseInstance(item.scheduleIndex, item.originalIndex)}
+                onDelete={() => handleDeleteCourseInstanceRequest(item.scheduleIndex, item.originalIndex)}
               />
             ))
           ) : (
@@ -395,7 +410,7 @@ export default function App() {
         schedule={schedule}
         courseDayConfig={courseDayConfig}
         onImport={handleImportData}
-        onClear={handleClearAll}
+        onClear={handleClearAllRequest}
       />
 
       <CourseDayConfigModal
@@ -404,7 +419,16 @@ export default function App() {
         schedule={schedule}
         currentConfig={courseDayConfig}
         onSave={handleSaveDayConfig}
-        onDeleteCourse={handleDeleteCourseGlobally}
+        onDeleteCourse={handleGlobalDeleteRequest}
+      />
+
+      <ConfirmationModal
+        isOpen={confirmModal.isOpen}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        onConfirm={confirmModal.onConfirm}
+        onCancel={closeConfirm}
+        isDanger={confirmModal.isDanger}
       />
     </div>
   );

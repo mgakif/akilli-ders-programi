@@ -65,9 +65,8 @@ export const CourseDayConfigModal: React.FC<CourseDayConfigModalProps> = ({
   };
 
   const handleGlobalDelete = (courseName: string) => {
-    if (confirm(`"${courseName}" dersini ve tüm içeriklerini sistemden TAMAMEN silmek istediğinize emin misiniz? Bu işlem geri alınamaz.`)) {
-        onDeleteCourse(courseName);
-    }
+    // Removed native confirm. Parent component will handle the confirmation UI.
+    onDeleteCourse(courseName);
   };
 
   const handleSave = () => {
