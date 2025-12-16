@@ -1,0 +1,5 @@
+{
+  "name": "Akıllı Ders Programım",
+  "description": "Yıllık plan veya ders programı dosyalarınızı (Excel/Word) yükleyerek günlük ders konularınızı takip edebileceğiniz yapay zeka destekli asistan.",
+  "requestFramePermissions": []
+}
