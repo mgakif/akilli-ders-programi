@@ -128,41 +128,52 @@ export default function App() {
       localStorage.setItem(DAYS_CONFIG_KEY, JSON.stringify(newConfig));
   };
 
-  // This deletes a specific instance of a course (e.g. from the home screen card)
-  const handleDeleteCourseInstance = (day: string, isDate: boolean, courseIndex: number) => {
+  // ROBUST DELETE: Uses exact array indices to prevent day matching errors
+  const handleDeleteCourseInstance = (scheduleIndex: number, courseIndex: number) => {
     if(!confirm("Bu dersi listeden kaldırmak istediğinize emin misiniz?")) return;
 
-    let found = false;
-    const newSchedule = schedule.map(daySchedule => {
-      if (!found && daySchedule.day === day && !!daySchedule.isDate === isDate) {
-        found = true;
-        const currentCourses = Array.isArray(daySchedule.courses) ? daySchedule.courses : [];
-        const newCourses = [...currentCourses];
-        
-        if (courseIndex >= 0 && courseIndex < newCourses.length) {
-            newCourses.splice(courseIndex, 1);
-        }
-        
-        return { ...daySchedule, courses: newCourses };
-      }
-      return daySchedule;
-    }).filter(daySchedule => Array.isArray(daySchedule.courses) && daySchedule.courses.length > 0);
+    const newSchedule = [...schedule];
+    
+    // Safety check
+    if (scheduleIndex < 0 || scheduleIndex >= newSchedule.length) return;
 
-    setSchedule(newSchedule);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(newSchedule));
+    const targetDay = { ...newSchedule[scheduleIndex] };
+    const newCourses = [...targetDay.courses];
+    
+    if (courseIndex >= 0 && courseIndex < newCourses.length) {
+        newCourses.splice(courseIndex, 1);
+        targetDay.courses = newCourses;
+
+        // Update or remove the day if empty
+        if (newCourses.length === 0) {
+            newSchedule.splice(scheduleIndex, 1);
+        } else {
+            newSchedule[scheduleIndex] = targetDay;
+        }
+
+        setSchedule(newSchedule);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(newSchedule));
+    }
   };
 
-  // This deletes the course entirely from all days and configurations
+  // ROBUST GLOBAL DELETE: Trims strings to ensure matches
   const handleDeleteCourseGlobally = (courseName: string) => {
-    // 1. Filter out the course from the schedule
+    // 1. Filter out the course from the schedule (Normalize names)
+    const normalizedTarget = courseName.trim();
+
     const newSchedule = schedule.map(day => ({
         ...day,
-        courses: day.courses.filter(c => c.name !== courseName)
+        courses: day.courses.filter(c => c.name.trim() !== normalizedTarget)
     })).filter(day => day.courses.length > 0); // Remove days that become empty
 
     // 2. Remove from config
     const newConfig = { ...courseDayConfig };
-    delete newConfig[courseName];
+    // Find keys that match strictly or trimmed
+    Object.keys(newConfig).forEach(key => {
+        if (key.trim() === normalizedTarget) {
+            delete newConfig[key];
+        }
+    });
 
     // 3. Save states
     setSchedule(newSchedule);
@@ -180,41 +191,47 @@ export default function App() {
     const dayName = getDayName(currentDate); 
     const dateStr = currentDate.toISOString().split('T')[0];
     
-    let combinedCourses: { course: Course, originalDayKey: string, isDate: boolean, originalIndex: number }[] = [];
+    // Store scheduleIndex instead of just day name for reliable deletion
+    let combinedCourses: { course: Course, scheduleIndex: number, originalIndex: number }[] = [];
 
     // 1. Find Recurring Courses
-    const recurringDay = schedule.find(s => !s.isDate && s.day.toLowerCase() === dayName.toLowerCase());
-    if (recurringDay) {
-      recurringDay.courses.forEach((c, idx) => {
+    // Use findIndex to get the exact position in the master schedule array
+    const recurringDayIndex = schedule.findIndex(s => !s.isDate && s.day.toLowerCase() === dayName.toLowerCase());
+    
+    if (recurringDayIndex !== -1) {
+      schedule[recurringDayIndex].courses.forEach((c, idx) => {
         combinedCourses.push({ 
             course: c, 
-            originalDayKey: recurringDay.day, 
-            isDate: false, 
+            scheduleIndex: recurringDayIndex,
             originalIndex: idx 
         });
       });
     }
 
     // 2. Find Specific Date Courses
-    const specificDay = schedule.find(s => s.isDate && s.day === dateStr);
-    if (specificDay) {
-      specificDay.courses.forEach((c, idx) => {
+    const specificDayIndex = schedule.findIndex(s => s.isDate && s.day === dateStr);
+    
+    if (specificDayIndex !== -1) {
+      schedule[specificDayIndex].courses.forEach((c, idx) => {
         combinedCourses.push({ 
             course: c, 
-            originalDayKey: specificDay.day, 
-            isDate: true, 
+            scheduleIndex: specificDayIndex,
             originalIndex: idx 
         });
       });
     }
 
     // 3. Filter based on Day Configuration (User Settings)
-    // If user said "Programming" is only on "Wednesday", and today is "Monday", hide it.
     return combinedCourses.filter(item => {
-        const configDays = courseDayConfig[item.course.name];
+        const configDays = courseDayConfig[item.course.name.trim()]; // Handle loose config
         
         // If no config exists for this course, show it by default
-        if (!configDays) return true;
+        if (!configDays) {
+            // Check if there is a config for untrimmed version just in case
+            const rawConfigDays = courseDayConfig[item.course.name];
+            if (rawConfigDays) return rawConfigDays.includes(dayName);
+            return true;
+        }
 
         // If config exists, check if today matches one of the selected days
         return configDays.includes(dayName);
@@ -325,70 +342,6 @@ export default function App() {
           {currentDayData.length > 0 ? (
             currentDayData.map((item, idx) => (
               <CourseCard 
-                key={`${item.originalDayKey}-${idx}`} 
+                key={`${item.scheduleIndex}-${idx}`} 
                 course={item.course} 
-                onDelete={() => handleDeleteCourseInstance(item.originalDayKey, item.isDate, item.originalIndex)}
-              />
-            ))
-          ) : (
-            <div className="flex flex-col items-center justify-center py-16 bg-white rounded-2xl border border-slate-100 shadow-sm border-dashed">
-              <Layout className="w-12 h-12 text-slate-200 mb-3" />
-              <h3 className="text-lg font-medium text-slate-700">Ders Bulunamadı</h3>
-              <p className="text-slate-400 text-sm max-w-[240px] text-center mt-1">
-                Bu gün için planlanmış veya ayarlanmış bir ders görünmüyor.
-              </p>
-              
-              <div className="flex gap-2 mt-4">
-                 <button 
-                    onClick={() => setIsDayConfigOpen(true)}
-                    className="flex items-center gap-1 text-indigo-600 text-sm font-medium hover:underline bg-indigo-50 px-3 py-2 rounded-lg"
-                 >
-                    <CalendarClock className="w-4 h-4" />
-                    Günleri Düzenle
-                 </button>
-                 <button 
-                    onClick={() => setViewMode(ViewMode.UPLOAD)} 
-                    className="flex items-center gap-1 text-indigo-600 text-sm font-medium hover:underline bg-indigo-50 px-3 py-2 rounded-lg"
-                 >
-                    <Plus className="w-4 h-4" />
-                    Ders Ekle
-                 </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  if (!isAuthenticated) {
-    return <LoginView onLogin={handleLogin} />;
-  }
-
-  return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
-      {renderHeader()}
-      <main className="w-full">
-        {renderContent()}
-      </main>
-
-      <SettingsModal 
-        isOpen={isSettingsOpen} 
-        onClose={() => setIsSettingsOpen(false)}
-        schedule={schedule}
-        courseDayConfig={courseDayConfig}
-        onImport={handleImportData}
-        onClear={handleClearAll}
-      />
-
-      <CourseDayConfigModal
-        isOpen={isDayConfigOpen}
-        onClose={() => setIsDayConfigOpen(false)}
-        schedule={schedule}
-        currentConfig={courseDayConfig}
-        onSave={handleSaveDayConfig}
-        onDeleteCourse={handleDeleteCourseGlobally}
-      />
-    </div>
-  );
-}
+                onDelete={() => handleDeleteCourseInstance(item.scheduleIndex, item.original
