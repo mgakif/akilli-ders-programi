@@ -37,7 +37,7 @@ export const CourseCard: React.FC<CourseCardProps> = ({ course, onDelete }) => {
               e.stopPropagation();
               onDelete();
             }}
-            className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-white rounded-full transition-all opacity-0 group-hover:opacity-100 focus:opacity-100"
+            className="p-2 text-indigo-300 hover:text-red-500 hover:bg-white rounded-full transition-colors"
             title="Dersi Sil"
             aria-label="Delete course"
           >

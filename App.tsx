@@ -128,17 +128,26 @@ export default function App() {
       localStorage.setItem(DAYS_CONFIG_KEY, JSON.stringify(newConfig));
   };
 
-  const handleDeleteCourse = (day: string, courseIndex: number) => {
+  const handleDeleteCourse = (day: string, isDate: boolean, courseIndex: number) => {
     if(!confirm("Bu dersi silmek istediğinize emin misiniz?")) return;
 
+    let found = false;
     const newSchedule = schedule.map(daySchedule => {
-      if (daySchedule.day === day) {
-        const newCourses = [...daySchedule.courses];
-        newCourses.splice(courseIndex, 1);
+      // Logic: Only update the FIRST matching day.
+      // This prevents issues if duplicate days exist in the schedule array.
+      if (!found && daySchedule.day === day && !!daySchedule.isDate === isDate) {
+        found = true;
+        const currentCourses = Array.isArray(daySchedule.courses) ? daySchedule.courses : [];
+        const newCourses = [...currentCourses];
+        
+        if (courseIndex >= 0 && courseIndex < newCourses.length) {
+            newCourses.splice(courseIndex, 1);
+        }
+        
         return { ...daySchedule, courses: newCourses };
       }
       return daySchedule;
-    }).filter(daySchedule => daySchedule.courses.length > 0); // Remove day if empty
+    }).filter(daySchedule => Array.isArray(daySchedule.courses) && daySchedule.courses.length > 0); // Remove day if empty
 
     setSchedule(newSchedule);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(newSchedule));
@@ -153,13 +162,18 @@ export default function App() {
     const dayName = getDayName(currentDate); 
     const dateStr = currentDate.toISOString().split('T')[0];
     
-    let combinedCourses: { course: Course, originalDayKey: string, originalIndex: number }[] = [];
+    let combinedCourses: { course: Course, originalDayKey: string, isDate: boolean, originalIndex: number }[] = [];
 
     // 1. Find Recurring Courses
     const recurringDay = schedule.find(s => !s.isDate && s.day.toLowerCase() === dayName.toLowerCase());
     if (recurringDay) {
       recurringDay.courses.forEach((c, idx) => {
-        combinedCourses.push({ course: c, originalDayKey: recurringDay.day, originalIndex: idx });
+        combinedCourses.push({ 
+            course: c, 
+            originalDayKey: recurringDay.day, 
+            isDate: false, 
+            originalIndex: idx 
+        });
       });
     }
 
@@ -167,7 +181,12 @@ export default function App() {
     const specificDay = schedule.find(s => s.isDate && s.day === dateStr);
     if (specificDay) {
       specificDay.courses.forEach((c, idx) => {
-        combinedCourses.push({ course: c, originalDayKey: specificDay.day, originalIndex: idx });
+        combinedCourses.push({ 
+            course: c, 
+            originalDayKey: specificDay.day, 
+            isDate: true, 
+            originalIndex: idx 
+        });
       });
     }
 
@@ -290,7 +309,7 @@ export default function App() {
               <CourseCard 
                 key={`${item.originalDayKey}-${idx}`} 
                 course={item.course} 
-                onDelete={() => handleDeleteCourse(item.originalDayKey, item.originalIndex)}
+                onDelete={() => handleDeleteCourse(item.originalDayKey, item.isDate, item.originalIndex)}
               />
             ))
           ) : (
