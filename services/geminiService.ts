@@ -1,12 +1,46 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Schedule } from "../types";
 
-export const parseScheduleWithGemini = async (textData: string): Promise<Schedule> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API Key bulunamadı.");
+// Helper function to safely retrieve API Key from various environment configurations
+const getApiKey = (): string | undefined => {
+  // 1. Try standard process.env (Node.js / Webpack / explicit defines)
+  try {
+    if (typeof process !== 'undefined' && process.env?.API_KEY) {
+      return process.env.API_KEY;
+    }
+  } catch (e) {
+    // process might be not defined
   }
 
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  // 2. Try Vite specific import.meta.env
+  try {
+    // @ts-ignore - import.meta might not be typed in all environments
+    if (import.meta?.env?.VITE_API_KEY) {
+      // @ts-ignore
+      return import.meta.env.VITE_API_KEY;
+    }
+    // @ts-ignore
+    if (import.meta?.env?.API_KEY) {
+      // @ts-ignore
+      return import.meta.env.API_KEY;
+    }
+  } catch (e) {
+    // import.meta might not be defined
+  }
+  
+  return undefined;
+};
+
+export const parseScheduleWithGemini = async (textData: string): Promise<Schedule> => {
+  const apiKey = getApiKey();
+
+  if (!apiKey) {
+    throw new Error(
+      "API Key bulunamadı. Vercel kullanıyorsanız Environment Variables kısmında değişken adını 'VITE_API_KEY' olarak güncellemeyi deneyin."
+    );
+  }
+
+  const ai = new GoogleGenAI({ apiKey: apiKey });
   const today = new Date();
   
   // Yıl tahmini için mantık: Eğer şu an 8. aydan sonraysak (Eylül-Aralık), eğitim yılı bu yıldır.
@@ -108,7 +142,6 @@ export const parseScheduleWithGemini = async (textData: string): Promise<Schedul
       }
 
       // Veri doğrulama ve temizleme (Sanitization)
-      // Bu adım, courses dizisinin null/undefined olmasını engeller
       const validatedSchedule: Schedule = parsed.map((item: any) => ({
         day: item.day ? String(item.day) : "Tarihsiz",
         isDate: !!item.isDate,
