@@ -344,4 +344,68 @@ export default function App() {
               <CourseCard 
                 key={`${item.scheduleIndex}-${idx}`} 
                 course={item.course} 
-                onDelete={() => handleDeleteCourseInstance(item.scheduleIndex, item.original
+                onDelete={() => handleDeleteCourseInstance(item.scheduleIndex, item.originalIndex)}
+              />
+            ))
+          ) : (
+            <div className="flex flex-col items-center justify-center py-16 bg-white rounded-2xl border border-slate-100 shadow-sm border-dashed">
+              <Layout className="w-12 h-12 text-slate-200 mb-3" />
+              <h3 className="text-lg font-medium text-slate-700">Ders Bulunamadı</h3>
+              <p className="text-slate-400 text-sm max-w-[240px] text-center mt-1">
+                Bu gün için planlanmış veya ayarlanmış bir ders görünmüyor.
+              </p>
+              
+              <div className="flex gap-2 mt-4">
+                 <button 
+                    onClick={() => setIsDayConfigOpen(true)}
+                    className="flex items-center gap-1 text-indigo-600 text-sm font-medium hover:underline bg-indigo-50 px-3 py-2 rounded-lg"
+                 >
+                    <CalendarClock className="w-4 h-4" />
+                    Günleri Düzenle
+                 </button>
+                 <button 
+                    onClick={() => setViewMode(ViewMode.UPLOAD)} 
+                    className="flex items-center gap-1 text-indigo-600 text-sm font-medium hover:underline bg-indigo-50 px-3 py-2 rounded-lg"
+                 >
+                    <Plus className="w-4 h-4" />
+                    Ders Ekle
+                 </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  if (!isAuthenticated) {
+    return <LoginView onLogin={handleLogin} />;
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
+      {renderHeader()}
+      <main className="w-full">
+        {renderContent()}
+      </main>
+
+      <SettingsModal 
+        isOpen={isSettingsOpen} 
+        onClose={() => setIsSettingsOpen(false)}
+        schedule={schedule}
+        courseDayConfig={courseDayConfig}
+        onImport={handleImportData}
+        onClear={handleClearAll}
+      />
+
+      <CourseDayConfigModal
+        isOpen={isDayConfigOpen}
+        onClose={() => setIsDayConfigOpen(false)}
+        schedule={schedule}
+        currentConfig={courseDayConfig}
+        onSave={handleSaveDayConfig}
+        onDeleteCourse={handleDeleteCourseGlobally}
+      />
+    </div>
+  );
+}
