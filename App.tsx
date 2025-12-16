@@ -128,13 +128,12 @@ export default function App() {
       localStorage.setItem(DAYS_CONFIG_KEY, JSON.stringify(newConfig));
   };
 
-  const handleDeleteCourse = (day: string, isDate: boolean, courseIndex: number) => {
-    if(!confirm("Bu dersi silmek istediğinize emin misiniz?")) return;
+  // This deletes a specific instance of a course (e.g. from the home screen card)
+  const handleDeleteCourseInstance = (day: string, isDate: boolean, courseIndex: number) => {
+    if(!confirm("Bu dersi listeden kaldırmak istediğinize emin misiniz?")) return;
 
     let found = false;
     const newSchedule = schedule.map(daySchedule => {
-      // Logic: Only update the FIRST matching day.
-      // This prevents issues if duplicate days exist in the schedule array.
       if (!found && daySchedule.day === day && !!daySchedule.isDate === isDate) {
         found = true;
         const currentCourses = Array.isArray(daySchedule.courses) ? daySchedule.courses : [];
@@ -147,10 +146,29 @@ export default function App() {
         return { ...daySchedule, courses: newCourses };
       }
       return daySchedule;
-    }).filter(daySchedule => Array.isArray(daySchedule.courses) && daySchedule.courses.length > 0); // Remove day if empty
+    }).filter(daySchedule => Array.isArray(daySchedule.courses) && daySchedule.courses.length > 0);
 
     setSchedule(newSchedule);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(newSchedule));
+  };
+
+  // This deletes the course entirely from all days and configurations
+  const handleDeleteCourseGlobally = (courseName: string) => {
+    // 1. Filter out the course from the schedule
+    const newSchedule = schedule.map(day => ({
+        ...day,
+        courses: day.courses.filter(c => c.name !== courseName)
+    })).filter(day => day.courses.length > 0); // Remove days that become empty
+
+    // 2. Remove from config
+    const newConfig = { ...courseDayConfig };
+    delete newConfig[courseName];
+
+    // 3. Save states
+    setSchedule(newSchedule);
+    setCourseDayConfig(newConfig);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newSchedule));
+    localStorage.setItem(DAYS_CONFIG_KEY, JSON.stringify(newConfig));
   };
 
   const getDayName = (date: Date): string => {
@@ -309,7 +327,7 @@ export default function App() {
               <CourseCard 
                 key={`${item.originalDayKey}-${idx}`} 
                 course={item.course} 
-                onDelete={() => handleDeleteCourse(item.originalDayKey, item.isDate, item.originalIndex)}
+                onDelete={() => handleDeleteCourseInstance(item.originalDayKey, item.isDate, item.originalIndex)}
               />
             ))
           ) : (
@@ -369,6 +387,7 @@ export default function App() {
         schedule={schedule}
         currentConfig={courseDayConfig}
         onSave={handleSaveDayConfig}
+        onDeleteCourse={handleDeleteCourseGlobally}
       />
     </div>
   );
