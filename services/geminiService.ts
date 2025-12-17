@@ -1,125 +1,126 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Schedule } from "../types";
 
-// Helper function to safely retrieve API Key from various environment configurations
+// Helper function to safely retrieve API Key
 const getApiKey = (): string | undefined => {
-  // 1. Try standard process.env (Node.js / Webpack / explicit defines)
   try {
-    if (typeof process !== 'undefined' && process.env?.API_KEY) {
-      return process.env.API_KEY;
-    }
-  } catch (e) {
-    // process might be not defined
-  }
-
-  // 2. Try Vite specific import.meta.env
+    if (typeof process !== 'undefined' && process.env?.API_KEY) return process.env.API_KEY;
+  } catch (e) {}
   try {
-    // @ts-ignore - import.meta might not be typed in all environments
-    if (import.meta?.env?.VITE_API_KEY) {
-      // @ts-ignore
-      return import.meta.env.VITE_API_KEY;
-    }
     // @ts-ignore
-    if (import.meta?.env?.API_KEY) {
-      // @ts-ignore
-      return import.meta.env.API_KEY;
-    }
-  } catch (e) {
-    // import.meta might not be defined
-  }
-  
+    if (import.meta?.env?.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
+    // @ts-ignore
+    if (import.meta?.env?.API_KEY) return import.meta.env.API_KEY;
+  } catch (e) {}
   return undefined;
 };
 
-export const parseScheduleWithGemini = async (textData: string): Promise<Schedule> => {
-  const apiKey = getApiKey();
+// Robust JSON parser with array recovery
+const safeJSONParse = (jsonString: string): any => {
+  let cleaned = jsonString.replace(/```json\n?|\n?```/g, "").trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch (e) {
+    console.warn("JSON parse failed, attempting recovery...", e);
+    if (cleaned.startsWith('[')) {
+       let currentString = cleaned;
+       for (let i = 0; i < 5; i++) {
+          const lastBraceIndex = currentString.lastIndexOf('}');
+          if (lastBraceIndex === -1) break;
+          currentString = currentString.substring(0, lastBraceIndex + 1);
+          const candidate = currentString + ']';
+          try {
+             return JSON.parse(candidate);
+          } catch (retryError) {
+             currentString = currentString.substring(0, lastBraceIndex);
+          }
+       }
+    }
+    throw new Error(`JSON formatı bozuk: ${(e as any).message}`);
+  }
+};
 
+// Aggressive text cleaner to reduce Input Token usage
+const preprocessText = (text: string): string => {
+  return text
+    .replace(/\r\n/g, '\n')       // Normalize newlines
+    .replace(/\t/g, ' ')          // Tabs to spaces
+    .replace(/ {2,}/g, ' ')       // Collapse multiple spaces
+    .replace(/\n{3,}/g, '\n\n')   // Max 2 empty lines
+    .trim();
+};
+
+export const parseScheduleWithGemini = async (
+  textData: string, 
+  onProgress?: (status: string, progress: number) => void,
+  userInstruction?: string
+): Promise<Schedule> => {
+  const apiKey = getApiKey();
   if (!apiKey) {
-    throw new Error(
-      "API Key bulunamadı. Vercel kullanıyorsanız Environment Variables kısmında değişken adını 'VITE_API_KEY' olarak güncellemeyi deneyin."
-    );
+    throw new Error("API Key bulunamadı. Vercel ortam değişkenlerini (VITE_API_KEY) kontrol edin.");
   }
 
   const ai = new GoogleGenAI({ apiKey: apiKey });
   const today = new Date();
   
-  // Yıl tahmini için mantık: Eğer şu an 8. aydan sonraysak (Eylül-Aralık), eğitim yılı bu yıldır.
-  // Değilse (Ocak-Haziran), eğitim yılı bir önceki yıl başlamıştır.
+  // Yıl tahmini
   const currentMonth = today.getMonth() + 1;
   const educationalStartYear = currentMonth >= 8 ? today.getFullYear() : today.getFullYear() - 1;
-  
-  const dateContext = `
-    REFERANS YIL BİLGİSİ: Bu ders programı ${educationalStartYear}-${educationalStartYear + 1} Eğitim-Öğretim yılına aittir. 
-    - Eylül, Ekim, Kasım, Aralık ayları için YIL: ${educationalStartYear} olmalıdır.
-    - Ocak, Şubat, Mart, Nisan, Mayıs, Haziran ayları için YIL: ${educationalStartYear + 1} olmalıdır.
-    - JSON çıktısında "day" alanını oluştururken bu yılları KESİNLİKLE dikkate al. Rastgele yıl atama.
-  `;
-  
+  const dateContext = `REF YIL: ${educationalStartYear}-${educationalStartYear + 1}.`;
+
+  // Base System Instruction
   const systemInstruction = `
-    Sen uzman bir eğitim asistanısın. Excel veya Word dosyasından çıkarılmış ham metni analiz edip JSON formatına çevireceksin.
-
+    Sen bir eğitim asistanısın. Metni JSON dizisine çevir.
     ${dateContext}
+    
+    ${userInstruction ? `**ÖZEL İSTEK:** ${userInstruction}` : ''}
 
-    **ÖNEMLİ - DİKEY METİN VE TABLO YAPISI SORUNLARI İÇİN TALİMATLAR:**
-    Word tablolarında Tarih/Hafta sütunu bazen DİKEY yazıldığı için metin çıktısında satırların hizası kayabilir.
-    Bunu çözmek için şu mantığı uygula:
-    1. **BLOK MANTIĞI (FILL-DOWN):** Metin akışında bir Tarih Aralığı (Örn: "11-15 Eylül") veya Hafta Bilgisi (Örn: "1. Hafta") gördüğünde, bunu bir "BAŞLIK" olarak kabul et.
-    2. **UYGULAMA:** Bu tarihi, *yeni bir tarih/hafta ibaresi görene kadar* altında sıralanan tüm ders içeriklerine uygula. Yani her dersin yanına tarih yazılmamış olabilir, en son okuduğun tarihi kullanmaya devam et.
-    3. **TARİH ÇIKARIMI:** Eğer "1. Hafta: 9-13 Eylül" yazıyorsa:
-       - 9 Eylül ${educationalStartYear} -> Pazartesi
-       - 10 Eylül ${educationalStartYear} -> Salı
-       - ...şeklinde o haftanın iş günlerine dağıt.
-
-    **AYRIŞTIRMA KURALLARI:**
-    1. **KONULAR (topics):** "Konu", "Kazanım", "Alt Öğrenme Alanı", "Modül" başlıkları altındaki metinleri al.
-    2. **GÖRMEZDEN GEL:** "YÖNTEM VE TEKNİKLER", "ARAÇ GEREÇLER", "ETKİNLİKLER" sütunlarını veri kirliliği yaratmaması için YOK SAY.
-    3. **NOTLAR (note):** "Açıklamalar", "Belirli Gün ve Haftalar" sütununda yazan "Sınav", "Bayram", "Tatil", "Haftası" gibi ifadeleri "note" alanına ekle.
-
-    **ÇIKTI FORMATI:**
-    Sadece ve sadece saf JSON dizisi döndür. Markdown ('''json) kullanma.
+    **KURALLAR:**
+    1. Sadece ders verilerini al. (Yöntem, Araç vb. SİL).
+    2. Tarih bloklarını (Örn: "10-14 Eylül") haftanın günlerine dağıt.
+    3. JSON döndür. Markdown yok.
+    4. Çıktı çok uzun olmasın diye açıklamaları özetle.
   `;
+
+  // Pre-process and Limit
+  // 60,000 chars is approx 15k-20k tokens. Safe for Flash model input.
+  // We take the substring to prevent massive bills on accidental huge file uploads.
+  const cleanedText = preprocessText(textData).substring(0, 60000); 
+
+  if (onProgress) onProgress("Veri optimize ediliyor ve gönderiliyor...", 20);
 
   const prompt = `
-    Aşağıdaki ders programı metnini analiz et.
-    
-    DİKKAT: Word dosyasından geldiği için "Tarih/Hafta" bilgisi metnin başında veya bloklar arasında tek başına duruyor olabilir. O tarihi, altındaki derslere dağıt.
-    Yılları karıştırma. Eylül-Aralık: ${educationalStartYear}, Ocak-Haziran: ${educationalStartYear + 1}.
-
+    Ders programını analiz et.
     Metin:
-    ${textData.substring(0, 30000)}
+    ${cleanedText}
   `;
 
   try {
+    if (onProgress) onProgress("Yapay zeka analiz ediyor... (Bu işlem dosya boyutuna göre 10-30sn sürebilir)", 50);
+
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: prompt,
       config: {
         systemInstruction: systemInstruction,
         responseMimeType: "application/json",
+        maxOutputTokens: 8192,
         responseSchema: {
           type: Type.ARRAY,
           items: {
             type: Type.OBJECT,
             properties: {
-              day: { type: Type.STRING, description: "YYYY-MM-DD formatında tarih." },
-              isDate: { type: Type.BOOLEAN, description: "Her zaman true olmalı." },
+              day: { type: Type.STRING, description: "YYYY-MM-DD" },
+              isDate: { type: Type.BOOLEAN },
               courses: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    name: { type: Type.STRING, description: "Dersin adı (Büyük harfle yazılmış olabilir)" },
-                    time: { type: Type.STRING, description: "Ders saati süresi (örn: 4)", nullable: true },
-                    topics: { 
-                      type: Type.ARRAY, 
-                      items: { type: Type.STRING },
-                      description: "Kazanımlar ve Konular listesi."
-                    },
-                    note: { 
-                      type: Type.STRING, 
-                      nullable: true, 
-                      description: "Sınav, Tatil, Belirli Gün ve Haftalar (Örn: '1. Sınav', 'Cumhuriyet Bayramı')." 
-                    }
+                    name: { type: Type.STRING },
+                    time: { type: Type.STRING, nullable: true },
+                    topics: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    note: { type: Type.STRING, nullable: true }
                   }
                 }
               }
@@ -129,20 +130,20 @@ export const parseScheduleWithGemini = async (textData: string): Promise<Schedul
       }
     });
 
-    let jsonText = response.text;
-    if (!jsonText) throw new Error("AI boş yanıt döndürdü.");
+    if (onProgress) onProgress("Yanıt işleniyor...", 90);
 
-    jsonText = jsonText.replace(/```json\n?|\n?```/g, "").trim();
+    const jsonText = response.text;
+    if (!jsonText) throw new Error("AI yanıt döndürmedi.");
+
+    const parsed = safeJSONParse(jsonText);
     
-    try {
-      const parsed = JSON.parse(jsonText);
-      
-      if (!Array.isArray(parsed)) {
+    if (!Array.isArray(parsed)) {
          throw new Error("AI yanıtı beklenen formatta (dizi) değil.");
-      }
+    }
 
-      // Veri doğrulama ve temizleme (Sanitization)
-      const validatedSchedule: Schedule = parsed.map((item: any) => ({
+    if (onProgress) onProgress("Tamamlandı!", 100);
+
+    const validatedSchedule: Schedule = parsed.map((item: any) => ({
         day: item.day ? String(item.day) : "Tarihsiz",
         isDate: !!item.isDate,
         courses: Array.isArray(item.courses) ? item.courses.map((c: any) => ({
@@ -151,14 +152,9 @@ export const parseScheduleWithGemini = async (textData: string): Promise<Schedul
             topics: Array.isArray(c.topics) ? c.topics.map(String) : [],
             note: c.note ? String(c.note) : undefined
         })) : []
-      }));
+    }));
 
-      return validatedSchedule;
-
-    } catch (parseError) {
-      console.error("JSON Parse Error:", parseError);
-      throw new Error(`JSON formatı hatalı. AI Yanıtı: ${jsonText.substring(0, 200)}...`);
-    }
+    return validatedSchedule;
 
   } catch (error: any) {
     console.error("Gemini Parse Error:", error);
@@ -167,8 +163,7 @@ export const parseScheduleWithGemini = async (textData: string): Promise<Schedul
     const detailedError = new Error(errorMessage);
     (detailedError as any).details = `
       Message: ${error.message}
-      Stack: ${error.stack}
-      AI Response: ${error.message.includes('AI Yanıtı') ? 'See message above' : 'Not available'}
+      AI Response Snippet: ${error.message.includes('AI Yanıtı') ? 'See above' : 'Not available'}
     `;
     
     throw detailedError;

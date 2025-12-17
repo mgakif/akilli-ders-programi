@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { extractTextFromFile } from '../services/fileUtils';
 import { parseScheduleWithGemini } from '../services/geminiService';
 import { Schedule } from '../types';
-import { UploadCloud, FileText, FileSpreadsheet, Loader2, ArrowLeft, AlertTriangle, HelpCircle, X, Copy, Check, Info } from 'lucide-react';
+import { UploadCloud, FileText, FileSpreadsheet, Loader2, ArrowLeft, AlertTriangle, HelpCircle, X, Copy, Check, Info, Wand2 } from 'lucide-react';
+import { ProgressBar } from './ProgressBar';
 
 interface UploadViewProps {
   onUploadSuccess: (schedule: Schedule) => void;
@@ -16,6 +17,11 @@ export const UploadView: React.FC<UploadViewProps> = ({ onUploadSuccess, hasExis
   const [debugLog, setDebugLog] = useState<string | null>(null);
   const [showLog, setShowLog] = useState(false);
   const [copied, setCopied] = useState(false);
+  
+  // New States for Hints and Progress
+  const [userHint, setUserHint] = useState('');
+  const [progress, setProgress] = useState(0);
+  const [statusMessage, setStatusMessage] = useState('');
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -24,21 +30,38 @@ export const UploadView: React.FC<UploadViewProps> = ({ onUploadSuccess, hasExis
     setLoading(true);
     setError(null);
     setDebugLog(null);
+    setProgress(5);
+    setStatusMessage("Dosya okunuyor...");
 
     try {
       // 1. Extract text locally
       const text = await extractTextFromFile(file);
+      setProgress(15);
+      setStatusMessage("Yapay zeka analizi hazırlanıyor...");
       
-      // 2. Send to Gemini
-      const schedule = await parseScheduleWithGemini(text);
+      // 2. Send to Gemini with Progress Callback and Hints
+      const schedule = await parseScheduleWithGemini(
+        text, 
+        (status, pct) => {
+          setStatusMessage(status);
+          setProgress(pct);
+        },
+        userHint // Pass the optional hint
+      );
       
       // 3. Complete
-      onUploadSuccess(schedule);
+      setStatusMessage("Tamamlandı!");
+      setProgress(100);
+      setTimeout(() => {
+        onUploadSuccess(schedule);
+      }, 500);
+
     } catch (err: any) {
       console.error(err);
       setError(err.message || "Bir hata oluştu. Lütfen dosyanızın bozuk olmadığından emin olun.");
+      setLoading(false);
+      setProgress(0);
       
-      // Hata detaylarını log olarak sakla
       const logContent = `
 --- ERROR DETAILS ---
 Time: ${new Date().toISOString()}
@@ -47,8 +70,6 @@ Details: ${err.details || 'N/A'}
 Stack: ${err.stack}
       `.trim();
       setDebugLog(logContent);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -81,23 +102,31 @@ Stack: ${err.stack}
       </h2>
       <p className="text-slate-500 mb-6 max-w-md">
         {hasExisting 
-          ? "Başka bir dersin yıllık planını veya programını ekleyerek mevcut takviminle birleştirebilirsin."
-          : "Excel (.xlsx) veya Word (.docx) formatındaki yıllık planınızı veya haftalık ders programınızı yükleyin."
+          ? "Mevcut takvimine yeni bir ders planı ekleyerek birleştirebilirsin."
+          : "Yıllık planınızı (.xlsx veya .docx) yükleyin, yapay zeka sizin için günleri ayarlasın."
         }
       </p>
 
-      {/* İpucu Kutusu */}
-      <div className="bg-blue-50 border border-blue-100 p-3 rounded-lg flex items-start gap-2 text-left max-w-md mb-8">
-        <Info className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
-        <div className="text-xs text-blue-800">
-          <p className="font-semibold mb-1">Dikey Metin Uyarısı:</p>
-          Word dosyalarında "Tarih/Hafta" sütunu dikey yazılmışsa okuması zor olabilir. 
-          Eğer Word dosyanız hatalı yüklenirse, tabloyu <strong>Excel'e kopyalayıp</strong> yüklemeyi deneyin. Excel yapıyı daha iyi korur.
+      {/* Yapay Zeka İpucu Alanı */}
+      <div className="w-full max-w-md mb-6 relative group">
+        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+           <Wand2 className="h-5 w-5 text-indigo-400 group-focus-within:text-indigo-600 transition-colors" />
+        </div>
+        <input 
+          type="text" 
+          value={userHint}
+          onChange={(e) => setUserHint(e.target.value)}
+          placeholder="Özel Talimat (Opsiyonel): Örn: Sadece 'Konu' sütununu al."
+          className="block w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl text-slate-700 bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all text-sm placeholder:text-slate-400"
+          disabled={loading}
+        />
+        <div className="text-[10px] text-slate-400 text-left mt-1.5 ml-1">
+          * AI'ya hangi sütunları okuması gerektiğini söyleyerek hataları azaltabilirsiniz.
         </div>
       </div>
 
       {error && (
-        <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-lg text-sm border border-red-200 max-w-md w-full relative">
+        <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-lg text-sm border border-red-200 max-w-md w-full relative animate-fade-in-up">
           <div className="flex items-center justify-center gap-2 font-bold mb-2">
             <AlertTriangle className="w-5 h-5" />
             <span>İşlem Başarısız</span>
@@ -120,14 +149,11 @@ Stack: ${err.stack}
       )}
 
       {loading ? (
-        <div className="flex flex-col items-center space-y-3">
-          <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
-          <p className="text-sm text-indigo-600 font-medium">Yapay zeka dosyanızı analiz ediyor...</p>
-        </div>
+        <ProgressBar progress={progress} statusMessage={statusMessage} />
       ) : (
-        <label className="relative cursor-pointer group">
+        <label className="relative cursor-pointer group animate-fade-in-up">
           <div className="flex items-center gap-3 bg-indigo-600 text-white px-8 py-4 rounded-xl shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all transform hover:-translate-y-1">
-            <span className="font-semibold">Dosya Seç</span>
+            <span className="font-semibold">Dosya Seç ve Başla</span>
           </div>
           <input 
             type="file" 
@@ -138,16 +164,18 @@ Stack: ${err.stack}
         </label>
       )}
 
-      <div className="mt-8 grid grid-cols-2 gap-4 w-full max-w-xs opacity-70">
-        <div className="flex flex-col items-center p-4 bg-white rounded-xl border border-slate-100 shadow-sm">
-          <FileSpreadsheet className="w-8 h-8 text-green-600 mb-2" />
-          <span className="text-xs font-medium text-slate-500">Excel (Önerilen)</span>
+      {!loading && (
+        <div className="mt-8 grid grid-cols-2 gap-4 w-full max-w-xs opacity-70 animate-fade-in">
+          <div className="flex flex-col items-center p-4 bg-white rounded-xl border border-slate-100 shadow-sm">
+            <FileSpreadsheet className="w-8 h-8 text-green-600 mb-2" />
+            <span className="text-xs font-medium text-slate-500">Excel (Önerilen)</span>
+          </div>
+          <div className="flex flex-col items-center p-4 bg-white rounded-xl border border-slate-100 shadow-sm">
+            <FileText className="w-8 h-8 text-blue-600 mb-2" />
+            <span className="text-xs font-medium text-slate-500">Word</span>
+          </div>
         </div>
-        <div className="flex flex-col items-center p-4 bg-white rounded-xl border border-slate-100 shadow-sm">
-          <FileText className="w-8 h-8 text-blue-600 mb-2" />
-          <span className="text-xs font-medium text-slate-500">Word</span>
-        </div>
-      </div>
+      )}
 
       {/* Log Modal */}
       {showLog && debugLog && (
