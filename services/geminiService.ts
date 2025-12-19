@@ -1,7 +1,6 @@
-import { GoogleGenAI, Type } from "@google/genai";
-import { Schedule } from "../types";
+import { GoogleGenAI, Type, Schema, HarmCategory, HarmBlockThreshold } from "@google/genai";
+import { Schedule, Course, DaySchedule } from "../types";
 
-// Helper function to safely retrieve API Key
 const getApiKey = (): string | undefined => {
   try {
     if (typeof process !== 'undefined' && process.env?.API_KEY) return process.env.API_KEY;
@@ -15,157 +14,188 @@ const getApiKey = (): string | undefined => {
   return undefined;
 };
 
-// Robust JSON parser with array recovery
-const safeJSONParse = (jsonString: string): any => {
-  let cleaned = jsonString.replace(/```json\n?|\n?```/g, "").trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch (e) {
-    console.warn("JSON parse failed, attempting recovery...", e);
-    if (cleaned.startsWith('[')) {
-       let currentString = cleaned;
-       for (let i = 0; i < 5; i++) {
-          const lastBraceIndex = currentString.lastIndexOf('}');
-          if (lastBraceIndex === -1) break;
-          currentString = currentString.substring(0, lastBraceIndex + 1);
-          const candidate = currentString + ']';
-          try {
-             return JSON.parse(candidate);
-          } catch (retryError) {
-             currentString = currentString.substring(0, lastBraceIndex);
-          }
-       }
-    }
-    throw new Error(`JSON formatı bozuk: ${(e as any).message}`);
+const cleanJsonText = (text: string): string => {
+  if (!text) return "[]";
+  let clean = text.trim();
+  
+  // Remove markdown code blocks
+  clean = clean.replace(/^```[a-z]*\s*/i, '').replace(/\s*```$/, '');
+
+  // Extract array if embedded in text
+  const firstOpen = clean.indexOf('[');
+  const lastClose = clean.lastIndexOf(']');
+  
+  if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
+    clean = clean.substring(firstOpen, lastClose + 1);
   }
+
+  return clean;
 };
 
-// Aggressive text cleaner to reduce Input Token usage
-const preprocessText = (text: string): string => {
-  return text
-    .replace(/\r\n/g, '\n')       // Normalize newlines
-    .replace(/\t/g, ' ')          // Tabs to spaces
-    .replace(/ {2,}/g, ' ')       // Collapse multiple spaces
-    .replace(/\n{3,}/g, '\n\n')   // Max 2 empty lines
-    .trim();
-};
+export interface GeminiInput {
+    type: 'text' | 'image';
+    data: string;
+    mimeType?: string;
+}
+
+// Intermediate interface for AI output
+interface WeeklyPlan {
+  startDate: string; // YYYY-MM-DD (Monday)
+  courses: Course[];
+}
 
 export const parseScheduleWithGemini = async (
-  textData: string, 
+  input: GeminiInput, 
   onProgress?: (status: string, progress: number) => void,
   userInstruction?: string
 ): Promise<Schedule> => {
   const apiKey = getApiKey();
-  if (!apiKey) {
-    throw new Error("API Key bulunamadı. Vercel ortam değişkenlerini (VITE_API_KEY) kontrol edin.");
-  }
+  if (!apiKey) throw new Error("API Key bulunamadı.");
 
   const ai = new GoogleGenAI({ apiKey: apiKey });
   const today = new Date();
   
-  // Yıl tahmini
   const currentMonth = today.getMonth() + 1;
+  // If we are in Aug-Dec, start year is this year. If Jan-July, start year is last year.
   const educationalStartYear = currentMonth >= 8 ? today.getFullYear() : today.getFullYear() - 1;
-  const dateContext = `REF YIL: ${educationalStartYear}-${educationalStartYear + 1}.`;
+  const dateContext = `REFERANS EĞİTİM YILI: ${educationalStartYear} Eylül - ${educationalStartYear + 1} Haziran.`;
 
-  // Base System Instruction
+  if (onProgress) onProgress("Yapay zeka hazırlanıyor...", 10);
+
   const systemInstruction = `
-    Sen bir eğitim asistanısın. Metni JSON dizisine çevir.
-    ${dateContext}
+    Sen uzman bir eğitim asistanısın. Görevin Yıllık Plan dosyasını analiz etmektir.
     
-    ${userInstruction ? `**ÖZEL İSTEK:** ${userInstruction}` : ''}
-
-    **KURALLAR:**
-    1. Sadece ders verilerini al. (Yöntem, Araç vb. SİL).
-    2. Tarih bloklarını (Örn: "10-14 Eylül") haftanın günlerine dağıt.
-    3. JSON döndür. Markdown yok.
-    4. Çıktı çok uzun olmasın diye açıklamaları özetle.
+    KURALLAR:
+    1. ${dateContext} yılını baz al.
+    2. Verilen tabloda her satır genellikle bir haftayı temsil eder (Örn: "1. Hafta: 08-12 Eylül").
+    3. Her satır için o haftanın **PAZARTESİ** gününün tarihini hesapla (YYYY-MM-DD formatında).
+    4. Dersin adını, konusunu (topics) ve varsa notları/belirli günleri çıkar.
+    5. "topics" (Konu/Kazanım) alanını eksiksiz doldur.
+    
+    ${userInstruction ? `KULLANICI EK NOTU: ${userInstruction}` : ''}
   `;
 
-  // Pre-process and Limit
-  // 60,000 chars is approx 15k-20k tokens. Safe for Flash model input.
-  // We take the substring to prevent massive bills on accidental huge file uploads.
-  const cleanedText = preprocessText(textData).substring(0, 60000); 
-
-  if (onProgress) onProgress("Veri optimize ediliyor ve gönderiliyor...", 20);
-
-  const prompt = `
-    Ders programını analiz et.
-    Metin:
-    ${cleanedText}
-  `;
-
-  try {
-    if (onProgress) onProgress("Yapay zeka analiz ediyor... (Bu işlem dosya boyutuna göre 10-30sn sürebilir)", 50);
-
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        systemInstruction: systemInstruction,
-        responseMimeType: "application/json",
-        maxOutputTokens: 8192,
-        responseSchema: {
+  // We ask for Weekly data instead of Daily data to save output tokens (approx 5x more efficient)
+  const weeklySchema: Schema = {
+    type: Type.ARRAY,
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        startDate: { 
+          type: Type.STRING, 
+          description: "The date of the Monday of this week in YYYY-MM-DD format." 
+        },
+        courses: {
           type: Type.ARRAY,
           items: {
             type: Type.OBJECT,
             properties: {
-              day: { type: Type.STRING, description: "YYYY-MM-DD" },
-              isDate: { type: Type.BOOLEAN },
-              courses: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    name: { type: Type.STRING },
-                    time: { type: Type.STRING, nullable: true },
-                    topics: { type: Type.ARRAY, items: { type: Type.STRING } },
-                    note: { type: Type.STRING, nullable: true }
-                  }
-                }
-              }
-            }
+              name: { type: Type.STRING, description: "Course name" },
+              topics: { type: Type.ARRAY, items: { type: Type.STRING } },
+              note: { type: Type.STRING, nullable: true }
+            },
+            required: ["name", "topics"]
           }
         }
+      },
+      required: ["startDate", "courses"]
+    }
+  };
+
+  try {
+    let contentPart: any;
+    
+    if (input.type === 'image') {
+        if (onProgress) onProgress("Görsel taranıyor...", 30);
+        contentPart = {
+            inlineData: {
+                data: input.data,
+                mimeType: input.mimeType || 'image/jpeg'
+            }
+        };
+    } else {
+        if (onProgress) onProgress("Tablo analiz ediliyor...", 30);
+        contentPart = {
+            text: input.data.substring(0, 90000) // Safe limit
+        };
+    }
+
+    if (onProgress) onProgress("Program analiz ediliyor...", 60);
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.0-flash", 
+      contents: {
+          parts: [contentPart, { text: systemInstruction }]
+      },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: weeklySchema,
+        maxOutputTokens: 8192, // Still use max, but now it fits easily
+        temperature: 0.1,
+        safetySettings: [
+            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        ]
       }
     });
 
-    if (onProgress) onProgress("Yanıt işleniyor...", 90);
+    if (onProgress) onProgress("Veriler işleniyor...", 85);
 
-    const jsonText = response.text;
-    if (!jsonText) throw new Error("AI yanıt döndürmedi.");
+    const resultText = response.text;
+    if (!resultText) throw new Error("Yapay zeka yanıt veremedi.");
 
-    const parsed = safeJSONParse(jsonText);
-    
-    if (!Array.isArray(parsed)) {
-         throw new Error("AI yanıtı beklenen formatta (dizi) değil.");
+    try {
+        const cleanedText = cleanJsonText(resultText);
+        const weeklyData: WeeklyPlan[] = JSON.parse(cleanedText);
+        
+        if (!Array.isArray(weeklyData)) throw new Error("Format hatası.");
+
+        // EXPAND WEEKLY DATA TO DAILY SCHEDULE (Client-Side)
+        const expandedSchedule: Schedule = [];
+
+        weeklyData.forEach(week => {
+            if (!week.startDate || !week.courses) return;
+            
+            // Parse Monday
+            const monday = new Date(week.startDate);
+            if (isNaN(monday.getTime())) return;
+
+            // Generate Mon, Tue, Wed, Thu, Fri for this week
+            for (let i = 0; i < 5; i++) {
+                const dayDate = new Date(monday);
+                dayDate.setDate(monday.getDate() + i);
+                const dateStr = dayDate.toISOString().split('T')[0]; // YYYY-MM-DD
+
+                expandedSchedule.push({
+                    day: dateStr,
+                    isDate: true,
+                    courses: week.courses.map(c => ({
+                        name: c.name || "Ders",
+                        topics: c.topics || [],
+                        note: c.note,
+                        time: "" // Time is usually not in annual plans
+                    }))
+                });
+            }
+        });
+
+        // Sort by date
+        expandedSchedule.sort((a, b) => a.day.localeCompare(b.day));
+
+        if (onProgress) onProgress("Tamamlandı!", 100);
+        return expandedSchedule;
+
+    } catch (parseError) {
+        console.error("Processing Error:", parseError);
+        console.log("Raw:", resultText);
+        throw new Error("Veri işleme hatası. Dosya yapısı çok karmaşık olabilir.");
     }
 
-    if (onProgress) onProgress("Tamamlandı!", 100);
-
-    const validatedSchedule: Schedule = parsed.map((item: any) => ({
-        day: item.day ? String(item.day) : "Tarihsiz",
-        isDate: !!item.isDate,
-        courses: Array.isArray(item.courses) ? item.courses.map((c: any) => ({
-            name: c.name ? String(c.name) : "Ders",
-            time: c.time ? String(c.time) : undefined,
-            topics: Array.isArray(c.topics) ? c.topics.map(String) : [],
-            note: c.note ? String(c.note) : undefined
-        })) : []
-    }));
-
-    return validatedSchedule;
-
   } catch (error: any) {
-    console.error("Gemini Parse Error:", error);
-    
-    let errorMessage = error.message || "Dosya analiz edilemedi.";
-    const detailedError = new Error(errorMessage);
-    (detailedError as any).details = `
-      Message: ${error.message}
-      AI Response Snippet: ${error.message.includes('AI Yanıtı') ? 'See above' : 'Not available'}
-    `;
-    
-    throw detailedError;
+    console.error("Gemini Error:", error);
+    if (error.message?.includes("SAFETY")) throw new Error("Güvenlik filtresi.");
+    throw new Error(error.message || "Bağlantı hatası.");
   }
 };
