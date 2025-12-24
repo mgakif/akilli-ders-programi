@@ -6,11 +6,10 @@ import { LoginView } from './components/LoginView';
 import { SettingsModal } from './components/SettingsModal';
 import { CourseDayConfigModal } from './components/CourseDayConfigModal';
 import { ConfirmationModal } from './components/ConfirmationModal';
-import { Calendar, Layout, Plus, ChevronLeft, ChevronRight, LogOut, Settings, CalendarClock } from 'lucide-react';
+import { Calendar, Layout, Plus, ChevronLeft, ChevronRight, LogOut, Settings, CalendarClock, Cloud, CloudOff, Loader2 } from 'lucide-react';
+import { fetchUserSchedule, saveUserSchedule, supabase } from './services/supabaseService';
 
-const STORAGE_KEY = 'my_smart_schedule_v1';
 const AUTH_KEY = 'my_smart_schedule_auth_v1';
-const DAYS_CONFIG_KEY = 'my_smart_schedule_days_v1';
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
@@ -21,6 +20,11 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isDayConfigOpen, setIsDayConfigOpen] = useState(false);
   
+  // Loading & Sync States
+  const [isDataLoading, setIsDataLoading] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [dbConnected, setDbConnected] = useState(true);
+
   // Confirmation Modal State
   const [confirmModal, setConfirmModal] = useState({
     isOpen: false,
@@ -32,38 +36,64 @@ export default function App() {
 
   const closeConfirm = () => setConfirmModal(prev => ({ ...prev, isOpen: false }));
 
-  // Load initial state
+  // Load Auth State
   useEffect(() => {
-    // Check Auth
     const auth = localStorage.getItem(AUTH_KEY);
     if (auth === 'true') {
       setIsAuthenticated(true);
     }
-
-    // Load Schedule
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (parsed && parsed.length > 0) {
-          setSchedule(parsed);
-          setViewMode(ViewMode.TODAY);
-        }
-      } catch (e) {
-        console.error("Failed to parse saved schedule", e);
-      }
-    }
-
-    // Load Day Config
-    const savedConfig = localStorage.getItem(DAYS_CONFIG_KEY);
-    if (savedConfig) {
-        try {
-            setCourseDayConfig(JSON.parse(savedConfig));
-        } catch (e) {
-            console.error("Failed to parse day config", e);
-        }
-    }
   }, []);
+
+  // Load Data from Supabase when Auth changes to true
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadDataFromCloud();
+    }
+  }, [isAuthenticated]);
+
+  const loadDataFromCloud = async () => {
+    if (!supabase) {
+        setDbConnected(false);
+        return; // Supabase not configured
+    }
+
+    setIsDataLoading(true);
+    const data = await fetchUserSchedule();
+    
+    if (data) {
+      setSchedule(data.schedule as Schedule);
+      setCourseDayConfig(data.config as CourseDayConfig);
+      
+      if (Array.isArray(data.schedule) && data.schedule.length > 0) {
+        setViewMode(ViewMode.TODAY);
+      } else {
+        setViewMode(ViewMode.UPLOAD);
+      }
+      setDbConnected(true);
+    } else {
+      setDbConnected(false);
+      // Fallback or empty state handled by UI
+    }
+    setIsDataLoading(false);
+  };
+
+  const saveDataToCloud = async (newSchedule: Schedule, newConfig: CourseDayConfig) => {
+    // Optimistic Update
+    setSchedule(newSchedule);
+    setCourseDayConfig(newConfig);
+    
+    if (!supabase) return;
+
+    setIsSyncing(true);
+    const success = await saveUserSchedule(newSchedule, newConfig);
+    if (!success) {
+       setDbConnected(false);
+       // Optional: Add retry logic or error toast
+    } else {
+       setDbConnected(true);
+    }
+    setIsSyncing(false);
+  };
 
   const handleLogin = (success: boolean) => {
     if (success) {
@@ -72,9 +102,12 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    if (supabase) await supabase.auth.signOut();
     setIsAuthenticated(false);
     localStorage.removeItem(AUTH_KEY);
+    setSchedule([]);
+    setCourseDayConfig({});
   };
 
   const handleUploadSuccess = (incomingSchedule: Schedule) => {
@@ -102,30 +135,20 @@ export default function App() {
       }
     });
 
-    setSchedule(mergedSchedule);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedSchedule));
+    saveDataToCloud(mergedSchedule, courseDayConfig);
     setViewMode(ViewMode.TODAY);
   };
 
   const handleImportData = (importedSchedule: Schedule, importedConfig?: CourseDayConfig) => {
-    setSchedule(importedSchedule);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(importedSchedule));
-    
-    if (importedConfig) {
-      setCourseDayConfig(importedConfig);
-      localStorage.setItem(DAYS_CONFIG_KEY, JSON.stringify(importedConfig));
-    }
-    
+    const finalConfig = importedConfig || courseDayConfig;
+    saveDataToCloud(importedSchedule, finalConfig);
     setViewMode(ViewMode.TODAY);
   };
 
   // --- ACTIONS ---
 
   const executeClearAll = () => {
-      localStorage.removeItem(STORAGE_KEY);
-      localStorage.removeItem(DAYS_CONFIG_KEY);
-      setSchedule([]);
-      setCourseDayConfig({});
+      saveDataToCloud([], {});
       setViewMode(ViewMode.UPLOAD);
       setIsSettingsOpen(false);
       closeConfirm();
@@ -135,15 +158,14 @@ export default function App() {
     setConfirmModal({
         isOpen: true,
         title: 'Verileri Sıfırla',
-        message: 'Tüm ders programını silmek istediğinize emin misiniz? Bu işlem geri alınamaz.',
+        message: 'Tüm ders programını veritabanından silmek istediğinize emin misiniz? Bu işlem geri alınamaz.',
         isDanger: true,
         onConfirm: executeClearAll
     });
   };
 
   const handleSaveDayConfig = (newConfig: CourseDayConfig) => {
-      setCourseDayConfig(newConfig);
-      localStorage.setItem(DAYS_CONFIG_KEY, JSON.stringify(newConfig));
+      saveDataToCloud(schedule, newConfig);
   };
 
   const executeDeleteCourseInstance = (scheduleIndex: number, courseIndex: number) => {
@@ -163,8 +185,7 @@ export default function App() {
             newSchedule[scheduleIndex] = targetDay;
         }
 
-        setSchedule(newSchedule);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(newSchedule));
+        saveDataToCloud(newSchedule, courseDayConfig);
     }
     closeConfirm();
   };
@@ -193,10 +214,7 @@ export default function App() {
         }
     });
 
-    setSchedule(newSchedule);
-    setCourseDayConfig(newConfig);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(newSchedule));
-    localStorage.setItem(DAYS_CONFIG_KEY, JSON.stringify(newConfig));
+    saveDataToCloud(newSchedule, newConfig);
     closeConfirm();
   };
 
@@ -269,6 +287,24 @@ export default function App() {
           <Calendar className="w-5 h-5 text-white" />
         </div>
         <h1 className="font-bold text-slate-800 text-lg tracking-tight hidden xs:block">Ders Programım</h1>
+        
+        {/* Sync Status Indicator */}
+        <div className="ml-2">
+            {isSyncing ? (
+                <div className="flex items-center gap-1 text-xs text-indigo-500 bg-indigo-50 px-2 py-1 rounded-full">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>Kaydediliyor</span>
+                </div>
+            ) : dbConnected ? (
+                <div title="Veriler Bulutta Güvende">
+                  <Cloud className="w-4 h-4 text-emerald-500" />
+                </div>
+            ) : (
+                <div title="Bağlantı Hatası">
+                  <CloudOff className="w-4 h-4 text-red-400" />
+                </div>
+            )}
+        </div>
       </div>
       <div className="flex items-center gap-2">
         {schedule.length > 0 && (
@@ -332,6 +368,15 @@ export default function App() {
   );
 
   const renderContent = () => {
+    if (isDataLoading) {
+        return (
+            <div className="flex flex-col items-center justify-center min-h-[60vh] text-slate-400">
+                <Loader2 className="w-10 h-10 animate-spin mb-4 text-indigo-500" />
+                <p>Verileriniz yükleniyor...</p>
+            </div>
+        );
+    }
+
     if (viewMode === ViewMode.UPLOAD) {
       return (
         <UploadView 

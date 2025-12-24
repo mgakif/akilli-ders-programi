@@ -1,17 +1,30 @@
+
 import { GoogleGenAI, Type, Schema, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import { Schedule, Course, DaySchedule } from "../types";
 
+const getEnv = (key: string): string => {
+  try {
+    // @ts-ignore
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
+      // @ts-ignore
+      return import.meta.env[key];
+    }
+  } catch (e) {}
+  
+  try {
+    // @ts-ignore
+    if (typeof process !== 'undefined' && process.env && process.env[key]) {
+      // @ts-ignore
+      return process.env[key];
+    }
+  } catch (e) {}
+  
+  return '';
+};
+
 const getApiKey = (): string | undefined => {
-  try {
-    if (typeof process !== 'undefined' && process.env?.API_KEY) return process.env.API_KEY;
-  } catch (e) {}
-  try {
-    // @ts-ignore
-    if (import.meta?.env?.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
-    // @ts-ignore
-    if (import.meta?.env?.API_KEY) return import.meta.env.API_KEY;
-  } catch (e) {}
-  return undefined;
+  const key = getEnv('API_KEY') || getEnv('VITE_API_KEY');
+  return key || undefined;
 };
 
 const cleanJsonText = (text: string): string => {
