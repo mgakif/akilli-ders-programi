@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { ViewMode, Schedule, Course, CourseDayConfig } from './types';
 import { UploadView } from './components/UploadView';
@@ -6,8 +7,9 @@ import { LoginView } from './components/LoginView';
 import { SettingsModal } from './components/SettingsModal';
 import { CourseDayConfigModal } from './components/CourseDayConfigModal';
 import { ConfirmationModal } from './components/ConfirmationModal';
-import { Calendar, Layout, Plus, ChevronLeft, ChevronRight, LogOut, Settings, CalendarClock, Cloud, CloudOff, Loader2 } from 'lucide-react';
+import { Calendar, Layout, Plus, ChevronLeft, ChevronRight, LogOut, Settings, CalendarClock, Cloud, CloudOff, Loader2, AlertCircle } from 'lucide-react';
 import { fetchUserSchedule, saveUserSchedule, supabase } from './services/supabaseService';
+import { isConfigComplete, APP_CONFIG } from './services/config';
 
 const AUTH_KEY = 'my_smart_schedule_auth_v1';
 
@@ -36,13 +38,16 @@ export default function App() {
 
   const closeConfirm = () => setConfirmModal(prev => ({ ...prev, isOpen: false }));
 
+  // Check if configuration is missing (Development helper)
+  const configMissing = !isConfigComplete();
+
   // Load Auth State
   useEffect(() => {
     const auth = localStorage.getItem(AUTH_KEY);
-    if (auth === 'true') {
+    if (auth === 'true' && !configMissing) {
       setIsAuthenticated(true);
     }
-  }, []);
+  }, [configMissing]);
 
   // Load Data from Supabase when Auth changes to true
   useEffect(() => {
@@ -54,7 +59,7 @@ export default function App() {
   const loadDataFromCloud = async () => {
     if (!supabase) {
         setDbConnected(false);
-        return; // Supabase not configured
+        return;
     }
 
     setIsDataLoading(true);
@@ -72,13 +77,11 @@ export default function App() {
       setDbConnected(true);
     } else {
       setDbConnected(false);
-      // Fallback or empty state handled by UI
     }
     setIsDataLoading(false);
   };
 
   const saveDataToCloud = async (newSchedule: Schedule, newConfig: CourseDayConfig) => {
-    // Optimistic Update
     setSchedule(newSchedule);
     setCourseDayConfig(newConfig);
     
@@ -88,7 +91,6 @@ export default function App() {
     const success = await saveUserSchedule(newSchedule, newConfig);
     if (!success) {
        setDbConnected(false);
-       // Optional: Add retry logic or error toast
     } else {
        setDbConnected(true);
     }
@@ -111,13 +113,9 @@ export default function App() {
   };
 
   const handleUploadSuccess = (incomingSchedule: Schedule) => {
-    if (!Array.isArray(incomingSchedule)) {
-        console.error("Uploaded data is not an array");
-        return;
-    }
+    if (!Array.isArray(incomingSchedule)) return;
 
     const mergedSchedule = [...schedule];
-
     incomingSchedule.forEach(incomingDay => {
       const safeCourses = Array.isArray(incomingDay.courses) ? incomingDay.courses : [];
       const existingDayIndex = mergedSchedule.findIndex(s => s.day === incomingDay.day && s.isDate === incomingDay.isDate);
@@ -128,10 +126,7 @@ export default function App() {
           courses: [...mergedSchedule[existingDayIndex].courses, ...safeCourses]
         };
       } else {
-        mergedSchedule.push({
-            ...incomingDay,
-            courses: safeCourses
-        });
+        mergedSchedule.push({ ...incomingDay, courses: safeCourses });
       }
     });
 
@@ -145,88 +140,7 @@ export default function App() {
     setViewMode(ViewMode.TODAY);
   };
 
-  // --- ACTIONS ---
-
-  const executeClearAll = () => {
-      saveDataToCloud([], {});
-      setViewMode(ViewMode.UPLOAD);
-      setIsSettingsOpen(false);
-      closeConfirm();
-  };
-
-  const handleClearAllRequest = () => {
-    setConfirmModal({
-        isOpen: true,
-        title: 'Verileri Sıfırla',
-        message: 'Tüm ders programını veritabanından silmek istediğinize emin misiniz? Bu işlem geri alınamaz.',
-        isDanger: true,
-        onConfirm: executeClearAll
-    });
-  };
-
-  const handleSaveDayConfig = (newConfig: CourseDayConfig) => {
-      saveDataToCloud(schedule, newConfig);
-  };
-
-  const executeDeleteCourseInstance = (scheduleIndex: number, courseIndex: number) => {
-    const newSchedule = [...schedule];
-    if (scheduleIndex < 0 || scheduleIndex >= newSchedule.length) return;
-
-    const targetDay = { ...newSchedule[scheduleIndex] };
-    const newCourses = [...targetDay.courses];
-    
-    if (courseIndex >= 0 && courseIndex < newCourses.length) {
-        newCourses.splice(courseIndex, 1);
-        targetDay.courses = newCourses;
-
-        if (newCourses.length === 0) {
-            newSchedule.splice(scheduleIndex, 1);
-        } else {
-            newSchedule[scheduleIndex] = targetDay;
-        }
-
-        saveDataToCloud(newSchedule, courseDayConfig);
-    }
-    closeConfirm();
-  };
-
-  const handleDeleteCourseInstanceRequest = (scheduleIndex: number, courseIndex: number) => {
-    setConfirmModal({
-        isOpen: true,
-        title: 'Dersi Sil',
-        message: 'Bu dersi listeden kaldırmak istediğinize emin misiniz?',
-        isDanger: true,
-        onConfirm: () => executeDeleteCourseInstance(scheduleIndex, courseIndex)
-    });
-  };
-
-  const executeDeleteCourseGlobally = (courseName: string) => {
-    const normalizedTarget = courseName.trim();
-    const newSchedule = schedule.map(day => ({
-        ...day,
-        courses: day.courses.filter(c => c.name.trim() !== normalizedTarget)
-    })).filter(day => day.courses.length > 0); 
-
-    const newConfig = { ...courseDayConfig };
-    Object.keys(newConfig).forEach(key => {
-        if (key.trim() === normalizedTarget) {
-            delete newConfig[key];
-        }
-    });
-
-    saveDataToCloud(newSchedule, newConfig);
-    closeConfirm();
-  };
-
-  const handleGlobalDeleteRequest = (courseName: string) => {
-    setConfirmModal({
-        isOpen: true,
-        title: 'Dersi Tamamen Sil',
-        message: `"${courseName}" dersini ve tüm içeriklerini sistemden TAMAMEN silmek istediğinize emin misiniz?`,
-        isDanger: true,
-        onConfirm: () => executeDeleteCourseGlobally(courseName)
-    });
-  };
+  // --- UI RENDER HELPERS ---
 
   const getDayName = (date: Date): string => {
     return date.toLocaleDateString('tr-TR', { weekday: 'long' });
@@ -241,22 +155,14 @@ export default function App() {
     const recurringDayIndex = schedule.findIndex(s => !s.isDate && s.day.toLowerCase() === dayName.toLowerCase());
     if (recurringDayIndex !== -1) {
       schedule[recurringDayIndex].courses.forEach((c, idx) => {
-        combinedCourses.push({ 
-            course: c, 
-            scheduleIndex: recurringDayIndex,
-            originalIndex: idx 
-        });
+        combinedCourses.push({ course: c, scheduleIndex: recurringDayIndex, originalIndex: idx });
       });
     }
 
     const specificDayIndex = schedule.findIndex(s => s.isDate && s.day === dateStr);
     if (specificDayIndex !== -1) {
       schedule[specificDayIndex].courses.forEach((c, idx) => {
-        combinedCourses.push({ 
-            course: c, 
-            scheduleIndex: specificDayIndex,
-            originalIndex: idx 
-        });
+        combinedCourses.push({ course: c, scheduleIndex: specificDayIndex, originalIndex: idx });
       });
     }
 
@@ -269,7 +175,6 @@ export default function App() {
         }
         return configDays.includes(dayName);
     });
-
   }, [schedule, currentDate, courseDayConfig]);
 
   const changeDate = (days: number) => {
@@ -278,165 +183,29 @@ export default function App() {
     setCurrentDate(newDate);
   };
 
-  const resetToToday = () => setCurrentDate(new Date());
-
-  const renderHeader = () => (
-    <header className="sticky top-0 z-10 bg-white/90 backdrop-blur-md border-b border-slate-200 px-4 py-3 flex justify-between items-center shadow-sm">
-      <div className="flex items-center gap-2 cursor-pointer" onClick={() => setViewMode(ViewMode.TODAY)}>
-        <div className="bg-indigo-600 p-1.5 rounded-lg">
-          <Calendar className="w-5 h-5 text-white" />
-        </div>
-        <h1 className="font-bold text-slate-800 text-lg tracking-tight hidden xs:block">Ders Programım</h1>
-        
-        {/* Sync Status Indicator */}
-        <div className="ml-2">
-            {isSyncing ? (
-                <div className="flex items-center gap-1 text-xs text-indigo-500 bg-indigo-50 px-2 py-1 rounded-full">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    <span>Kaydediliyor</span>
-                </div>
-            ) : dbConnected ? (
-                <div title="Veriler Bulutta Güvende">
-                  <Cloud className="w-4 h-4 text-emerald-500" />
-                </div>
-            ) : (
-                <div title="Bağlantı Hatası">
-                  <CloudOff className="w-4 h-4 text-red-400" />
-                </div>
-            )}
-        </div>
-      </div>
-      <div className="flex items-center gap-2">
-        {schedule.length > 0 && (
-          <>
-             <button 
-                onClick={() => setIsDayConfigOpen(true)}
-                className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors border border-transparent hover:border-indigo-100"
-                title="Ders Günlerini Ayarla"
-            >
-                <CalendarClock className="w-5 h-5" />
-            </button>
-            <button 
-                onClick={() => setViewMode(ViewMode.UPLOAD)} 
-                className="flex items-center gap-1 px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100 transition-colors text-sm font-medium"
-            >
-                <Plus className="w-4 h-4" />
-                <span className="hidden sm:inline">Ders Ekle</span>
-            </button>
-          </>
-        )}
-        
-        <button 
-          onClick={() => setIsSettingsOpen(true)}
-          className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
-          title="Ayarlar / Yedekle"
-        >
-          <Settings className="w-5 h-5" />
-        </button>
-
-        <div className="w-px h-6 bg-slate-200 mx-1"></div>
-        <button 
-          onClick={handleLogout}
-          className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
-          title="Çıkış Yap"
-        >
-          <LogOut className="w-5 h-5" />
-        </button>
-      </div>
-    </header>
-  );
-
-  const renderNav = () => (
-    <div className="flex items-center justify-between mb-6 bg-white p-2 rounded-2xl shadow-sm border border-slate-100 select-none">
-      <button onClick={() => changeDate(-1)} className="p-2 hover:bg-slate-100 rounded-xl transition-colors active:scale-95">
-        <ChevronLeft className="w-5 h-5 text-slate-600" />
-      </button>
-      
-      <div className="flex flex-col items-center cursor-pointer active:opacity-70 transition-opacity" onClick={resetToToday}>
-        <span className="text-xs font-semibold text-indigo-600 uppercase tracking-widest">
-          {currentDate.toDateString() === new Date().toDateString() ? "Bugün" : currentDate.toLocaleDateString('tr-TR')}
-        </span>
-        <span className="text-lg font-bold text-slate-800">
-          {getDayName(currentDate)}
-        </span>
-      </div>
-
-      <button onClick={() => changeDate(1)} className="p-2 hover:bg-slate-100 rounded-xl transition-colors active:scale-95">
-        <ChevronRight className="w-5 h-5 text-slate-600" />
-      </button>
-    </div>
-  );
-
-  const renderContent = () => {
-    if (isDataLoading) {
-        return (
-            <div className="flex flex-col items-center justify-center min-h-[60vh] text-slate-400">
-                <Loader2 className="w-10 h-10 animate-spin mb-4 text-indigo-500" />
-                <p>Verileriniz yükleniyor...</p>
-            </div>
-        );
-    }
-
-    if (viewMode === ViewMode.UPLOAD) {
-      return (
-        <UploadView 
-          onUploadSuccess={handleUploadSuccess} 
-          hasExisting={schedule.length > 0} 
-          onCancel={() => setViewMode(ViewMode.TODAY)}
-        />
-      );
-    }
-
+  if (configMissing) {
     return (
-      <div className="max-w-md mx-auto w-full px-4 pt-6 pb-24">
-        {renderNav()}
-
-        <div className="animate-fade-in-up">
-          <div className="flex items-baseline justify-between mb-4 px-1">
-            <h2 className="text-xl font-bold text-slate-800">Dersler</h2>
-            <span className="text-sm font-medium text-slate-400 bg-slate-100 px-2 py-1 rounded-md">
-              {currentDayData.length} Ders
-            </span>
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full border border-slate-100 text-center animate-fade-in-up">
+          <div className="bg-amber-100 p-4 rounded-full w-16 h-16 mx-auto mb-6 flex items-center justify-center text-amber-600">
+            <AlertCircle className="w-8 h-8" />
           </div>
-          
-          {currentDayData.length > 0 ? (
-            currentDayData.map((item, idx) => (
-              <CourseCard 
-                key={`${item.scheduleIndex}-${idx}`} 
-                course={item.course} 
-                onDelete={() => handleDeleteCourseInstanceRequest(item.scheduleIndex, item.originalIndex)}
-              />
-            ))
-          ) : (
-            <div className="flex flex-col items-center justify-center py-16 bg-white rounded-2xl border border-slate-100 shadow-sm border-dashed">
-              <Layout className="w-12 h-12 text-slate-200 mb-3" />
-              <h3 className="text-lg font-medium text-slate-700">Ders Bulunamadı</h3>
-              <p className="text-slate-400 text-sm max-w-[240px] text-center mt-1">
-                Bu gün için planlanmış veya ayarlanmış bir ders görünmüyor.
-              </p>
-              
-              <div className="flex gap-2 mt-4">
-                 <button 
-                    onClick={() => setIsDayConfigOpen(true)}
-                    className="flex items-center gap-1 text-indigo-600 text-sm font-medium hover:underline bg-indigo-50 px-3 py-2 rounded-lg"
-                 >
-                    <CalendarClock className="w-4 h-4" />
-                    Günleri Düzenle
-                 </button>
-                 <button 
-                    onClick={() => setViewMode(ViewMode.UPLOAD)} 
-                    className="flex items-center gap-1 text-indigo-600 text-sm font-medium hover:underline bg-indigo-50 px-3 py-2 rounded-lg"
-                 >
-                    <Plus className="w-4 h-4" />
-                    Ders Ekle
-                 </button>
-              </div>
-            </div>
-          )}
+          <h2 className="text-xl font-bold text-slate-800 mb-3">Yapılandırma Eksik</h2>
+          <p className="text-slate-500 text-sm mb-6 leading-relaxed">
+            Geliştirme ortamında (localhost) çalışmak için kök dizine <strong>.env</strong> dosyası eklemeli ve aşağıdaki değişkenleri tanımlamalısınız:
+          </p>
+          <div className="bg-slate-900 text-slate-300 p-4 rounded-xl text-left text-xs font-mono mb-6 overflow-x-auto">
+            <p>VITE_SUPABASE_URL=your_url</p>
+            <p>VITE_SUPABASE_ANON_KEY=your_key</p>
+            <p>API_KEY=your_gemini_key</p>
+          </div>
+          <p className="text-xs text-slate-400">
+            Değişkenleri ekledikten sonra projeyi yeniden başlatmanız veya sayfayı yenilemeniz gerekebilir.
+          </p>
         </div>
       </div>
     );
-  };
+  }
 
   if (!isAuthenticated) {
     return <LoginView onLogin={handleLogin} />;
@@ -444,37 +213,87 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
-      {renderHeader()}
+      <header className="sticky top-0 z-10 bg-white/90 backdrop-blur-md border-b border-slate-200 px-4 py-3 flex justify-between items-center shadow-sm">
+        <div className="flex items-center gap-2 cursor-pointer" onClick={() => setViewMode(ViewMode.TODAY)}>
+          <div className="bg-indigo-600 p-1.5 rounded-lg">
+            <Calendar className="w-5 h-5 text-white" />
+          </div>
+          <h1 className="font-bold text-slate-800 text-lg tracking-tight hidden xs:block">Ders Programım</h1>
+          <div className="ml-2">
+              {isSyncing ? (
+                  <div className="flex items-center gap-1 text-xs text-indigo-500 bg-indigo-50 px-2 py-1 rounded-full">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span>Kaydediliyor</span>
+                  </div>
+              ) : dbConnected ? (
+                  <div title="Veriler Bulutta Güvende"><Cloud className="w-4 h-4 text-emerald-500" /></div>
+              ) : (
+                  <div title="Bağlantı Hatası"><CloudOff className="w-4 h-4 text-red-400" /></div>
+              )}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {schedule.length > 0 && (
+            <>
+               <button onClick={() => setIsDayConfigOpen(true)} className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors border border-transparent hover:border-indigo-100">
+                  <CalendarClock className="w-5 h-5" />
+              </button>
+              <button onClick={() => setViewMode(ViewMode.UPLOAD)} className="flex items-center gap-1 px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100 transition-colors text-sm font-medium">
+                  <Plus className="w-4 h-4" />
+                  <span className="hidden sm:inline">Ders Ekle</span>
+              </button>
+            </>
+          )}
+          <button onClick={() => setIsSettingsOpen(true)} className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors">
+            <Settings className="w-5 h-5" />
+          </button>
+          <div className="w-px h-6 bg-slate-200 mx-1"></div>
+          <button onClick={handleLogout} className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors">
+            <LogOut className="w-5 h-5" />
+          </button>
+        </div>
+      </header>
+
       <main className="w-full">
-        {renderContent()}
+        {isDataLoading ? (
+            <div className="flex flex-col items-center justify-center min-h-[60vh] text-slate-400">
+                <Loader2 className="w-10 h-10 animate-spin mb-4 text-indigo-500" />
+                <p>Verileriniz yükleniyor...</p>
+            </div>
+        ) : viewMode === ViewMode.UPLOAD ? (
+            <UploadView onUploadSuccess={handleUploadSuccess} hasExisting={schedule.length > 0} onCancel={() => setViewMode(ViewMode.TODAY)} />
+        ) : (
+            <div className="max-w-md mx-auto w-full px-4 pt-6 pb-24">
+                <div className="flex items-center justify-between mb-6 bg-white p-2 rounded-2xl shadow-sm border border-slate-100 select-none">
+                    <button onClick={() => changeDate(-1)} className="p-2 hover:bg-slate-100 rounded-xl transition-colors active:scale-95"><ChevronLeft className="w-5 h-5 text-slate-600" /></button>
+                    <div className="flex flex-col items-center cursor-pointer active:opacity-70 transition-opacity" onClick={() => setCurrentDate(new Date())}>
+                        <span className="text-xs font-semibold text-indigo-600 uppercase tracking-widest">{currentDate.toDateString() === new Date().toDateString() ? "Bugün" : currentDate.toLocaleDateString('tr-TR')}</span>
+                        <span className="text-lg font-bold text-slate-800">{getDayName(currentDate)}</span>
+                    </div>
+                    <button onClick={() => changeDate(1)} className="p-2 hover:bg-slate-100 rounded-xl transition-colors active:scale-95"><ChevronRight className="w-5 h-5 text-slate-600" /></button>
+                </div>
+
+                <div className="animate-fade-in-up">
+                    <div className="flex items-baseline justify-between mb-4 px-1">
+                        <h2 className="text-xl font-bold text-slate-800">Dersler</h2>
+                        <span className="text-sm font-medium text-slate-400 bg-slate-100 px-2 py-1 rounded-md">{currentDayData.length} Ders</span>
+                    </div>
+                    {currentDayData.length > 0 ? (
+                        currentDayData.map((item, idx) => <CourseCard key={idx} course={item.course} />)
+                    ) : (
+                        <div className="flex flex-col items-center justify-center py-16 bg-white rounded-2xl border border-slate-100 shadow-sm border-dashed">
+                            <Layout className="w-12 h-12 text-slate-200 mb-3" />
+                            <h3 className="text-lg font-medium text-slate-700">Ders Bulunamadı</h3>
+                            <button onClick={() => setViewMode(ViewMode.UPLOAD)} className="flex items-center gap-1 text-indigo-600 text-sm font-medium hover:underline bg-indigo-50 px-3 py-2 rounded-lg mt-4"><Plus className="w-4 h-4" /> Ders Ekle</button>
+                        </div>
+                    )}
+                </div>
+            </div>
+        )}
       </main>
 
-      <SettingsModal 
-        isOpen={isSettingsOpen} 
-        onClose={() => setIsSettingsOpen(false)}
-        schedule={schedule}
-        courseDayConfig={courseDayConfig}
-        onImport={handleImportData}
-        onClear={handleClearAllRequest}
-      />
-
-      <CourseDayConfigModal
-        isOpen={isDayConfigOpen}
-        onClose={() => setIsDayConfigOpen(false)}
-        schedule={schedule}
-        currentConfig={courseDayConfig}
-        onSave={handleSaveDayConfig}
-        onDeleteCourse={handleGlobalDeleteRequest}
-      />
-
-      <ConfirmationModal
-        isOpen={confirmModal.isOpen}
-        title={confirmModal.title}
-        message={confirmModal.message}
-        onConfirm={confirmModal.onConfirm}
-        onCancel={closeConfirm}
-        isDanger={confirmModal.isDanger}
-      />
+      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} schedule={schedule} courseDayConfig={courseDayConfig} onImport={handleImportData} onClear={() => saveDataToCloud([], {})} />
+      <CourseDayConfigModal isOpen={isDayConfigOpen} onClose={() => setIsDayConfigOpen(false)} schedule={schedule} currentConfig={courseDayConfig} onSave={(c) => saveDataToCloud(schedule, c)} onDeleteCourse={() => {}} />
     </div>
   );
 }
